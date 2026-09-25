@@ -1,0 +1,197 @@
+USE master;
+GO
+IF EXISTS (SELECT name FROM sys.databases WHERE name = N'UniversitySchedule')
+BEGIN
+    ALTER DATABASE UniversitySchedule SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE UniversitySchedule;
+END
+GO
+CREATE DATABASE UniversitySchedule;
+GO
+USE UniversitySchedule;
+GO
+CREATE TABLE StudentGroups (
+    GroupId INT IDENTITY(1,1) PRIMARY KEY,
+    GroupName NVARCHAR(50) NOT NULL UNIQUE
+);
+GO
+CREATE TABLE Teachers (
+    TeacherId INT IDENTITY(1,1) PRIMARY KEY,
+    FullName NVARCHAR(150) NOT NULL,
+    Email NVARCHAR(100) UNIQUE
+);
+GO
+CREATE TABLE Classrooms (
+    ClassroomId INT IDENTITY(1,1) PRIMARY KEY,
+    RoomNumber NVARCHAR(20) NOT NULL UNIQUE,
+    Capacity INT NOT NULL CHECK (Capacity > 0)
+);
+GO
+CREATE TABLE Subjects (
+    SubjectId INT IDENTITY(1,1) PRIMARY KEY,
+    SubjectName NVARCHAR(100) NOT NULL UNIQUE
+);
+GO
+CREATE TABLE LessonTimes (
+    LessonTimeId INT IDENTITY(1,1) PRIMARY KEY,
+    LessonNumber INT NOT NULL UNIQUE CHECK (LessonNumber BETWEEN 1 AND 8),
+    StartTime TIME NOT NULL,
+    EndTime TIME NOT NULL
+);
+GO
+CREATE TABLE Schedule (
+    ScheduleId INT IDENTITY(1,1) PRIMARY KEY,
+    LessonDate DATE NOT NULL,
+    LessonTimeId INT NOT NULL,
+    GroupId INT NOT NULL,
+    TeacherId INT NOT NULL,
+    ClassroomId INT NOT NULL,
+    SubjectId INT NOT NULL,
+    CONSTRAINT FK_Schedule_LessonTimes FOREIGN KEY (LessonTimeId) REFERENCES LessonTimes(LessonTimeId),
+    CONSTRAINT FK_Schedule_Groups FOREIGN KEY (GroupId) REFERENCES StudentGroups(GroupId),
+    CONSTRAINT FK_Schedule_Teachers FOREIGN KEY (TeacherId) REFERENCES Teachers(TeacherId),
+    CONSTRAINT FK_Schedule_Classrooms FOREIGN KEY (ClassroomId) REFERENCES Classrooms(ClassroomId),
+    CONSTRAINT FK_Schedule_Subjects FOREIGN KEY (SubjectId) REFERENCES Subjects(SubjectId)
+);
+GO
+CREATE TABLE ScheduleConflicts (
+    ConflictId INT IDENTITY(1,1) PRIMARY KEY,
+    ConflictDate DATETIME DEFAULT GETDATE(),
+    ConflictType NVARCHAR(100) NOT NULL,
+    Details NVARCHAR(MAX) NOT NULL
+);
+GO
+CREATE TRIGGER TRG_CheckScheduleConflicts
+ON Schedule
+FOR INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (
+        SELECT 1 
+        FROM inserted i
+        JOIN Schedule s ON i.LessonDate = s.LessonDate 
+                       AND i.LessonTimeId = s.LessonTimeId 
+                       AND i.GroupId = s.GroupId 
+                       AND i.ScheduleId <> s.ScheduleId
+    )
+    BEGIN
+        INSERT INTO ScheduleConflicts (ConflictType, Details)
+        SELECT N'Конфликт Группы', 
+               N'Группа ID ' + CAST(i.GroupId AS NVARCHAR) + N' уже занята на дату ' + CAST(i.LessonDate AS NVARCHAR)
+        FROM inserted i;
+
+        RAISERROR (N'Ошибка: Группа не может иметь две пары одновременно!', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+    IF EXISTS (
+        SELECT 1 
+        FROM inserted i
+        JOIN Schedule s ON i.LessonDate = s.LessonDate 
+                       AND i.LessonTimeId = s.LessonTimeId 
+                       AND i.TeacherId = s.TeacherId 
+                       AND i.ScheduleId <> s.ScheduleId
+    )
+    BEGIN
+        INSERT INTO ScheduleConflicts (ConflictType, Details)
+        SELECT N'Конфликт Преподавателя', 
+               N'Преподаватель ID ' + CAST(i.TeacherId AS NVARCHAR) + N' уже занят на дату ' + CAST(i.LessonDate AS NVARCHAR)
+        FROM inserted i;
+
+        RAISERROR (N'Ошибка: Преподаватель не может вести две пары одновременно!', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+    IF EXISTS (
+        SELECT 1 
+        FROM inserted i
+        JOIN Schedule s ON i.LessonDate = s.LessonDate 
+                       AND i.LessonTimeId = s.LessonTimeId 
+                       AND i.ClassroomId = s.ClassroomId 
+                       AND i.ScheduleId <> s.ScheduleId
+    )
+    BEGIN
+        INSERT INTO ScheduleConflicts (ConflictType, Details)
+        SELECT N'Конфликт Аудитории', 
+               N'Аудитория ID ' + CAST(i.ClassroomId AS NVARCHAR) + N' уже занята на дату ' + CAST(i.LessonDate AS NVARCHAR)
+        FROM inserted i;
+        RAISERROR (N'Ошибка: Аудитория уже занята на эту пару!', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+END;
+GO
+INSERT INTO LessonTimes (LessonNumber, StartTime, EndTime) VALUES 
+(1, '09:00', '10:30'),
+(2, '10:40', '12:10'),
+(3, '12:40', '14:10'),
+(4, '14:20', '15:50');
+INSERT INTO StudentGroups (GroupName) VALUES 
+(N'ИВТ-101'),
+(N'ПИ-201'),
+(N'ИС-301');
+INSERT INTO Teachers (FullName, Email) VALUES 
+(N'Иванов И.И.', N'ivanov@univ.ru'),
+(N'Петров П.П.', N'petrov@univ.ru'),
+(N'Сидоров С.С.', N'sidorov@univ.ru');
+INSERT INTO Classrooms (RoomNumber, Capacity) VALUES 
+(N'101-А', 30),
+(N'202-Б', 40),
+(N'303-В', 50);
+INSERT INTO Subjects (SubjectName) VALUES 
+(N'Базы Данных'),
+(N'Высшая Математика'),
+(N'Программирование');
+GO
+INSERT INTO Schedule (LessonDate, LessonTimeId, GroupId, TeacherId, ClassroomId, SubjectId) VALUES 
+('2026-09-21', 1, 1, 1, 1, 1),
+('2026-09-21', 2, 1, 2, 2, 2),
+('2026-09-21', 3, 1, 3, 3, 3),
+('2026-09-21', 4, 1, 1, 1, 1);
+GO
+SELECT 
+    s.ScheduleId AS [ID],
+    s.LessonDate AS [Дата],
+    lt.LessonNumber AS [Пара №],
+    lt.StartTime AS [Начало],
+    lt.EndTime AS [Конец],
+    g.GroupName AS [Группа],
+    sub.SubjectName AS [Предмет],
+    t.FullName AS [Преподаватель],
+    c.RoomNumber AS [Аудитория]
+FROM Schedule s
+JOIN StudentGroups g ON s.GroupId = g.GroupId
+JOIN Teachers t ON s.TeacherId = t.TeacherId
+JOIN Classrooms c ON s.ClassroomId = c.ClassroomId
+JOIN Subjects sub ON s.SubjectId = sub.SubjectId
+JOIN LessonTimes lt ON s.LessonTimeId = lt.LessonTimeId
+ORDER BY s.LessonDate, lt.LessonNumber;
+SELECT 
+    s.LessonDate AS [Дата],
+    lt.LessonNumber AS [Пара №],
+    t.FullName AS [Преподаватель],
+    sub.SubjectName AS [Предмет],
+    c.RoomNumber AS [Аудитория]
+FROM Schedule s
+JOIN Teachers t ON s.TeacherId = t.TeacherId
+JOIN Subjects sub ON s.SubjectId = sub.SubjectId
+JOIN Classrooms c ON s.ClassroomId = c.ClassroomId
+JOIN LessonTimes lt ON s.LessonTimeId = lt.LessonTimeId
+WHERE t.FullName = N'Иванов И.И.';
+SELECT 
+    t.FullName AS [Преподаватель],
+    COUNT(s.ScheduleId) AS [Количество пар]
+FROM Teachers t
+LEFT JOIN Schedule s ON t.TeacherId = s.TeacherId
+GROUP BY t.FullName;
+SELECT RoomNumber, Capacity 
+FROM Classrooms 
+WHERE Capacity >= 40;
+-- Раскомментировать код ниже, чтобы показать блокировку:
+/*
+INSERT INTO Schedule (LessonDate, LessonTimeId, GroupId, TeacherId, ClassroomId, SubjectId) 
+VALUES ('2026-09-21', 1, 1, 2, 2, 2);
+*/
+SELECT * FROM ScheduleConflicts;
